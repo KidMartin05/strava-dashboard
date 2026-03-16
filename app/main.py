@@ -9,6 +9,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
+# uvicorn app.main:app --reload
+
 load_dotenv()
 
 app = FastAPI()
