@@ -1,7 +1,7 @@
+tokens.json
 .env
 .venv/
 .idea/
 app/.idea/
 __pycache__/
 *.pyc
-tokens.json
