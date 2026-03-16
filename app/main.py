@@ -1,7 +1,9 @@
 import os
+import json
 import math
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
+
 
 import requests
 from dotenv import load_dotenv
@@ -25,12 +27,19 @@ STRAVA_AUTH_URL = "https://www.strava.com/oauth/authorize"
 STRAVA_TOKEN_URL = "https://www.strava.com/oauth/token"
 STRAVA_API_BASE = "https://www.strava.com/api/v3"
 
-# Demo-only in-memory storage.
-# For real use, store this in a database.
-TOKENS = {}
+# Load saved tokens from tokens.json if it exists
+if os.path.exists("tokens.json"):
+    with open("tokens.json", "r") as f:
+        TOKENS = json.load(f)
+else:
+    TOKENS = {}
+
 ATHLETES = {}
 ACTIVITIES = {}
 
+
+def parse_strava_datetime(dt_str: str):
+    return datetime.strptime(dt_str, "%Y-%m-%dT%H:%M:%SZ")
 
 def meters_to_miles(meters: float) -> float:
     return meters * 0.000621371
@@ -93,6 +102,9 @@ def refresh_access_token_if_needed(athlete_id: str):
         "refresh_token": new_token_data["refresh_token"],
         "expires_at": new_token_data["expires_at"],
     }
+
+    with open("tokens.json", "w") as f:
+        json.dump(TOKENS, f, indent=4)
 
     return new_token_data["access_token"]
 
@@ -165,7 +177,7 @@ def compute_dashboard_stats(activities):
         if not start_date:
             continue
 
-        dt = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+        dt = parse_strava_datetime(start_date)
         year, week_num, _ = dt.isocalendar()
         weekly_key = f"{year}-W{week_num:02d}"
         monthly_key = f"{dt.year}-{dt.month:02d}"
@@ -211,7 +223,7 @@ def calculate_run_streak(run_activities):
         start_date = activity.get("start_date")
         if not start_date:
             continue
-        dt = datetime.fromisoformat(start_date.replace("Z", "+00:00")).date()
+        dt = parse_strava_datetime(start_date).date()
         run_days.add(dt)
 
     streak = 0
@@ -298,6 +310,9 @@ def auth_callback(code: str):
         "refresh_token": token_data["refresh_token"],
         "expires_at": token_data["expires_at"],
     }
+
+    with open("tokens.json", "w") as f:
+        json.dump(TOKENS, f, indent=4)
 
     ATHLETES[athlete_id] = athlete
 
