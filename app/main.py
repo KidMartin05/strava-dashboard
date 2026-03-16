@@ -75,7 +75,7 @@ def auth_headers(access_token: str):
 
 def refresh_access_token_if_needed(athlete_id: str):
     token_data = TOKENS.get(athlete_id)
-    if not token_data:
+    if not token_data or not isinstance(token_data, dict):
         return None
 
     expires_at = token_data.get("expires_at", 0)
@@ -153,7 +153,7 @@ def get_all_activities(access_token: str, per_page: int = 100, max_pages: int = 
     return all_items
 
 
-def compute_dashboard_stats(activities):
+def compute_dashboard_stats(activities, official_stats=None):
     run_activities = [a for a in activities if a.get("sport_type") == "Run"]
 
     total_runs = len(run_activities)
@@ -187,12 +187,18 @@ def compute_dashboard_stats(activities):
 
     current_streak = calculate_run_streak(run_activities)
 
+    ytd_miles = None
+    if official_stats:
+        ytd_meters = official_stats.get("ytd_run_totals", {}).get("distance", 0)
+        ytd_miles = round(meters_to_miles(ytd_meters), 2)
+
     return {
         "total_runs": total_runs,
         "total_miles": total_miles,
         "total_elevation_meters": total_elevation,
         "average_pace": mps_to_min_per_mile(avg_speed) if avg_speed else None,
         "current_streak_days": current_streak,
+        "ytd_miles": ytd_miles,
         "last_run": summarize_run(last_run) if last_run else None,
         "longest_run": summarize_run(longest_run) if longest_run else None,
         "weekly_totals": dict(sorted(weekly_totals.items())),
@@ -246,6 +252,16 @@ def calculate_run_streak(run_activities):
 
 @app.get("/", response_class=HTMLResponse)
 def home():
+    athlete_id = None
+
+    for key, value in TOKENS.items():
+        if isinstance(value, dict) and "access_token" in value:
+            athlete_id = key
+            break
+
+    if athlete_id:
+        return RedirectResponse(url=f"/dashboard/{athlete_id}/pretty")
+
     return """
     <html>
         <head>
@@ -316,7 +332,7 @@ def auth_callback(code: str):
 
     ATHLETES[athlete_id] = athlete
 
-    return RedirectResponse(url=f"/dashboard/{athlete_id}")
+    return RedirectResponse(url=f"/dashboard/{athlete_id}/pretty")
 
 
 @app.get("/dashboard/{athlete_id}")
@@ -330,7 +346,7 @@ def dashboard(athlete_id: str):
     activities = get_all_activities(access_token)
 
     ACTIVITIES[athlete_id] = activities
-    computed_stats = compute_dashboard_stats(activities)
+    computed_stats = compute_dashboard_stats(activities, official_stats)
 
     return {
         "athlete": {
@@ -354,7 +370,8 @@ def pretty_dashboard(athlete_id: str):
 
     athlete = get_logged_in_athlete(access_token)
     activities = get_all_activities(access_token)
-    stats = compute_dashboard_stats(activities)
+    official_stats = get_athlete_stats(access_token, int(athlete_id))
+    stats = compute_dashboard_stats(activities, official_stats)
 
     last_run_html = "<p>No runs found.</p>"
     if stats["last_run"]:
@@ -417,6 +434,10 @@ def pretty_dashboard(athlete_id: str):
                 <div class="card">
                     <h2>Total Miles</h2>
                     <p>{stats['total_miles']}</p>
+                </div>
+                <div class="card">
+                    <h2>Miles This Year</h2>
+                    <p>{stats['ytd_miles']}</p>
                 </div>
                 <div class="card">
                     <h2>Average Pace</h2>
