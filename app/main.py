@@ -1,23 +1,22 @@
 import os
 import json
-import math
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
-
 
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-
-# uvicorn app.main:app --reload
 
 load_dotenv()
 
 app = FastAPI()
 
-templates = Jinja2Templates(directory="templates")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 STRAVA_CLIENT_ID = os.getenv("STRAVA_CLIENT_ID")
 STRAVA_CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET")
@@ -27,9 +26,10 @@ STRAVA_AUTH_URL = "https://www.strava.com/oauth/authorize"
 STRAVA_TOKEN_URL = "https://www.strava.com/oauth/token"
 STRAVA_API_BASE = "https://www.strava.com/api/v3"
 
-# Load saved tokens from tokens.json if it exists
-if os.path.exists("tokens.json"):
-    with open("tokens.json", "r") as f:
+TOKENS_FILE = "tokens.json"
+
+if os.path.exists(TOKENS_FILE):
+    with open(TOKENS_FILE, "r") as f:
         TOKENS = json.load(f)
 else:
     TOKENS = {}
@@ -38,8 +38,14 @@ ATHLETES = {}
 ACTIVITIES = {}
 
 
+def save_tokens():
+    with open(TOKENS_FILE, "w") as f:
+        json.dump(TOKENS, f, indent=4)
+
+
 def parse_strava_datetime(dt_str: str):
     return datetime.strptime(dt_str, "%Y-%m-%dT%H:%M:%SZ")
+
 
 def meters_to_miles(meters: float) -> float:
     return meters * 0.000621371
@@ -48,12 +54,15 @@ def meters_to_miles(meters: float) -> float:
 def mps_to_min_per_mile(speed_mps: float):
     if not speed_mps or speed_mps <= 0:
         return None
+
     seconds_per_mile = 1609.344 / speed_mps
     minutes = int(seconds_per_mile // 60)
     seconds = int(round(seconds_per_mile % 60))
+
     if seconds == 60:
         minutes += 1
         seconds = 0
+
     return f"{minutes}:{seconds:02d}"
 
 
@@ -102,9 +111,7 @@ def refresh_access_token_if_needed(athlete_id: str):
         "refresh_token": new_token_data["refresh_token"],
         "expires_at": new_token_data["expires_at"],
     }
-
-    with open("tokens.json", "w") as f:
-        json.dump(TOKENS, f, indent=4)
+    save_tokens()
 
     return new_token_data["access_token"]
 
@@ -153,6 +160,61 @@ def get_all_activities(access_token: str, per_page: int = 100, max_pages: int = 
     return all_items
 
 
+def is_run_activity(activity):
+    sport_type = activity.get("sport_type")
+    activity_type = activity.get("type")
+    run_types = {"Run", "TrailRun", "VirtualRun"}
+    return sport_type in run_types or activity_type in run_types
+
+
+def summarize_run(activity):
+    if not activity:
+        return None
+
+    return {
+        "name": activity.get("name"),
+        "date": activity.get("start_date_local"),
+        "distance_miles": round(meters_to_miles(activity.get("distance", 0)), 2),
+        "moving_time": format_duration(activity.get("moving_time", 0)),
+        "pace": mps_to_min_per_mile(activity.get("average_speed")),
+        "elevation_gain_m": round(activity.get("total_elevation_gain", 0), 1),
+    }
+
+
+def calculate_run_streak(run_activities):
+    if not run_activities:
+        return 0
+
+    run_days = set()
+
+    for activity in run_activities:
+        start_date_local = activity.get("start_date_local")
+        if not start_date_local:
+            continue
+
+        dt = parse_strava_datetime(start_date_local).date()
+        run_days.add(dt)
+
+    if not run_days:
+        return 0
+
+    today = datetime.now().date()
+    streak = 0
+    check_day = today
+
+    while check_day in run_days:
+        streak += 1
+        check_day -= timedelta(days=1)
+
+    if streak == 0:
+        check_day = today - timedelta(days=1)
+        while check_day in run_days:
+            streak += 1
+            check_day -= timedelta(days=1)
+
+    return streak
+
+
 def compute_dashboard_stats(activities, official_stats=None):
     run_activities = [a for a in activities if is_run_activity(a)]
 
@@ -161,10 +223,7 @@ def compute_dashboard_stats(activities, official_stats=None):
     total_elevation = round(sum(a.get("total_elevation_gain", 0) for a in run_activities), 1)
 
     last_run = run_activities[0] if run_activities else None
-
-    longest_run = None
-    if run_activities:
-        longest_run = max(run_activities, key=lambda a: a.get("distance", 0))
+    longest_run = max(run_activities, key=lambda a: a.get("distance", 0)) if run_activities else None
 
     avg_speed_values = [a.get("average_speed") for a in run_activities if a.get("average_speed")]
     avg_speed = sum(avg_speed_values) / len(avg_speed_values) if avg_speed_values else None
@@ -205,12 +264,6 @@ def compute_dashboard_stats(activities, official_stats=None):
         "monthly_totals": dict(sorted(monthly_totals.items())),
     }
 
-def is_run_activity(activity):
-    sport_type = activity.get("sport_type")
-    activity_type = activity.get("type")
-
-    run_types = {"Run", "TrailRun", "VirtualRun"}
-    return sport_type in run_types or activity_type in run_types
 
 def compute_daily_miles_this_year(activities):
     current_year = datetime.now(timezone.utc).year
@@ -232,6 +285,7 @@ def compute_daily_miles_this_year(activities):
         daily_totals[day_key] += meters_to_miles(activity.get("distance", 0))
 
     return dict(sorted(daily_totals.items()))
+
 
 def compute_weekly_miles_this_year(activities):
     current_year = datetime.now(timezone.utc).year
@@ -255,6 +309,7 @@ def compute_weekly_miles_this_year(activities):
 
     return dict(sorted(weekly_totals.items()))
 
+
 def compute_monthly_miles_this_year(activities):
     current_year = datetime.now(timezone.utc).year
     monthly_totals = defaultdict(float)
@@ -276,119 +331,82 @@ def compute_monthly_miles_this_year(activities):
 
     return dict(sorted(monthly_totals.items()))
 
+
 def get_heat_level(miles):
     if miles == 0:
         return "level-0"
-    elif miles < 2:
+    if miles < 3:
         return "level-1"
-    elif miles < 4:
+    if miles < 6:
         return "level-2"
-    elif miles < 6:
+    if miles < 9:
         return "level-3"
     return "level-4"
 
-def build_daily_heatmap_html(daily_miles, year):
-    start_of_year = datetime(year, 1, 1).date()
-    end_of_year = datetime(year, 12, 31).date()
 
-    html = ""
-    current_day = start_of_year
+def build_daily_heatmap_data(daily_miles, year):
+    items = []
+    current_day = datetime(year, 1, 1).date()
+    end_of_year = datetime(year, 12, 31).date()
 
     while current_day <= end_of_year:
         day_str = current_day.isoformat()
-        miles = daily_miles.get(day_str, 0)
-        level = get_heat_level(miles)
-
-        html += f'''
-        <div class="day-box {level}" title="{day_str}: {miles:.2f} miles"></div>
-        '''
-
+        miles = round(daily_miles.get(day_str, 0), 2)
+        items.append(
+            {
+                "label": day_str,
+                "miles": miles,
+                "level": get_heat_level(miles),
+            }
+        )
         current_day += timedelta(days=1)
 
-    return html
+    return items
 
-def build_weekly_heatmap_html(weekly_miles, year):
-    html = ""
+
+def build_weekly_heatmap_data(weekly_miles, year):
+    items = []
 
     for week_num in range(1, 54):
         week_key = f"{year}-W{week_num:02d}"
-        miles = weekly_miles.get(week_key, 0)
-        level = get_heat_level(miles)
+        miles = round(weekly_miles.get(week_key, 0), 2)
+        items.append(
+            {
+                "label": f"Week {week_num}",
+                "miles": miles,
+                "level": get_heat_level(miles),
+            }
+        )
 
-        html += f'''
-        <div class="week-box {level}" title="Week {week_num}: {miles:.2f} miles"></div>
-        '''
+    return items
 
-    return html
 
-def build_monthly_heatmap_html(monthly_miles, year):
-    html = ""
-
+def build_monthly_heatmap_data(monthly_miles, year):
+    items = []
     month_names = [
         "January", "February", "March", "April", "May", "June",
-        "July", "August", "September", "October", "November", "December"
+        "July", "August", "September", "October", "November", "December",
     ]
 
     for month_num in range(1, 13):
         month_key = f"{year}-{month_num:02d}"
-        miles = monthly_miles.get(month_key, 0)
-        level = get_heat_level(miles)
+        miles = round(monthly_miles.get(month_key, 0), 2)
         month_name = month_names[month_num - 1]
 
-        html += f'''
-        <div class="month-box {level}" title="{month_name}: {miles:.2f} miles">
-            <span>{month_name[:3]}</span>
-        </div>
-        '''
+        items.append(
+            {
+                "label": month_name,
+                "short_label": month_name[:3],
+                "miles": miles,
+                "level": get_heat_level(miles),
+            }
+        )
 
-    return html
-
-def summarize_run(activity):
-    if not activity:
-        return None
-
-    return {
-        "name": activity.get("name"),
-        "date": activity.get("start_date_local"),
-        "distance_miles": round(meters_to_miles(activity.get("distance", 0)), 2),
-        "moving_time": format_duration(activity.get("moving_time", 0)),
-        "pace": mps_to_min_per_mile(activity.get("average_speed")),
-        "elevation_gain_m": round(activity.get("total_elevation_gain", 0), 1),
-    }
+    return items
 
 
-def calculate_run_streak(run_activities):
-    if not run_activities:
-        return 0
-
-    run_days = set()
-    for activity in run_activities:
-        start_date = activity.get("start_date")
-        if not start_date:
-            continue
-        dt = parse_strava_datetime(start_date).date()
-        run_days.add(dt)
-
-    streak = 0
-    today = datetime.now(timezone.utc).date()
-
-    check_day = today
-    while check_day in run_days:
-        streak += 1
-        check_day -= timedelta(days=1)
-
-    if streak == 0:
-        yesterday = today - timedelta(days=1)
-        check_day = yesterday
-        while check_day in run_days:
-            streak += 1
-            check_day -= timedelta(days=1)
-
-    return streak
-
-
-@app.get("/", response_class=HTMLResponse)
-def home():
+@app.get("/")
+def home(request: Request):
     athlete_id = None
 
     for key, value in TOKENS.items():
@@ -399,30 +417,10 @@ def home():
     if athlete_id:
         return RedirectResponse(url=f"/dashboard/{athlete_id}/pretty")
 
-    return """
-    <html>
-        <head>
-            <title>Strava Stats App</title>
-            <style>
-                body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; }
-                a.button {
-                    display: inline-block;
-                    padding: 12px 18px;
-                    background: #fc4c02;
-                    color: white;
-                    text-decoration: none;
-                    border-radius: 8px;
-                    font-weight: bold;
-                }
-            </style>
-        </head>
-        <body>
-            <h1>Strava Stats App</h1>
-            <p>Connect your Strava account to view your dashboard.</p>
-            <a class="button" href="/login">Connect with Strava</a>
-        </body>
-    </html>
-    """
+    return templates.TemplateResponse(
+        "home.html",
+        {"request": request},
+    )
 
 
 @app.get("/login")
@@ -454,18 +452,15 @@ def auth_callback(code: str):
     token_response.raise_for_status()
     token_data = token_response.json()
 
-    access_token = token_data["access_token"]
     athlete = token_data["athlete"]
     athlete_id = str(athlete["id"])
 
     TOKENS[athlete_id] = {
-        "access_token": access_token,
+        "access_token": token_data["access_token"],
         "refresh_token": token_data["refresh_token"],
         "expires_at": token_data["expires_at"],
     }
-
-    with open("tokens.json", "w") as f:
-        json.dump(TOKENS, f, indent=4)
+    save_tokens()
 
     ATHLETES[athlete_id] = athlete
 
@@ -498,460 +493,39 @@ def dashboard(athlete_id: str):
         "computed_dashboard_stats": computed_stats,
     }
 
-@app.get("/dashboard/{athlete_id}/heatmap", response_class=HTMLResponse)
-def heatmap_dashboard(athlete_id: str):
+
+@app.get("/dashboard/{athlete_id}/pretty")
+def pretty_dashboard(request: Request, athlete_id: str):
     access_token = refresh_access_token_if_needed(athlete_id)
     if not access_token:
-        return HTMLResponse("<h1>No athlete token found.</h1>", status_code=404)
-
-    athlete = get_logged_in_athlete(access_token)
-    activities = get_all_activities(access_token)
-    daily_miles = compute_daily_miles_this_year(activities)
-
-    current_year = datetime.now(timezone.utc).year
-    start_of_year = datetime(current_year, 1, 1).date()
-    end_of_year = datetime(current_year, 12, 31).date()
-
-    boxes_html = ""
-    current_day = start_of_year
-
-    while current_day <= end_of_year:
-        day_str = current_day.isoformat()
-        miles = daily_miles.get(day_str, 0)
-
-        if miles == 0:
-            level = "level-0"
-        elif miles < 2:
-            level = "level-1"
-        elif miles < 4:
-            level = "level-2"
-        elif miles < 6:
-            level = "level-3"
-        else:
-            level = "level-4"
-
-        boxes_html += f'''
-        <div class="day-box {level}" title="{day_str}: {miles:.2f} miles"></div>
-        '''
-
-        current_day += timedelta(days=1)
-
-    return f"""
-    <html>
-        <head>
-            <title>Run Heatmap</title>
-            <style>
-                body {{
-                    font-family: Arial, sans-serif;
-                    background: #f7f7f7;
-                    max-width: 1100px;
-                    margin: 30px auto;
-                    padding: 20px;
-                }}
-                h1 {{
-                    margin-bottom: 8px;
-                }}
-                .muted {{
-                    color: #666;
-                    margin-bottom: 20px;
-                }}
-                .heatmap {{
-                    display: grid;
-                    grid-template-columns: repeat(31, 18px);
-                    gap: 6px;
-                    justify-content: start;
-                }}
-                .day-box {{
-                    width: 18px;
-                    height: 18px;
-                    border-radius: 4px;
-                    background: #ebedf0;
-                }}
-                .level-0 {{ background: #ebedf0; }}
-                .level-1 {{ background: #c6e48b; }}
-                .level-2 {{ background: #7bc96f; }}
-                .level-3 {{ background: #239a3b; }}
-                .level-4 {{ background: #196127; }}
-
-                .legend {{
-                    margin-top: 20px;
-                    display: flex;
-                    gap: 12px;
-                    align-items: center;
-                    flex-wrap: wrap;
-                }}
-                .legend-item {{
-                    display: flex;
-                    align-items: center;
-                    gap: 6px;
-                    font-size: 14px;
-                }}
-                .legend-box {{
-                    width: 16px;
-                    height: 16px;
-                    border-radius: 4px;
-                }}
-                a.button {{
-                    display: inline-block;
-                    margin-top: 24px;
-                    padding: 10px 14px;
-                    background: #fc4c02;
-                    color: white;
-                    text-decoration: none;
-                    border-radius: 8px;
-                    font-weight: bold;
-                    margin-right: 10px;
-                }}
-            </style>
-        </head>
-        <body>
-            <h1>{athlete.get('firstname', '')} {athlete.get('lastname', '')} - {current_year} Run Heatmap</h1>
-            <p class="muted">Each square shows how much you ran on that day.</p>
-
-            <div class="heatmap">
-                {boxes_html}
-            </div>
-
-            <div class="legend">
-                <div class="legend-item"><div class="legend-box level-0"></div>0 miles</div>
-                <div class="legend-item"><div class="legend-box level-1"></div><2 miles</div>
-                <div class="legend-item"><div class="legend-box level-2"></div>2-4 miles</div>
-                <div class="legend-item"><div class="legend-box level-3"></div>4-6 miles</div>
-                <div class="legend-item"><div class="legend-box level-4"></div>>6 miles</div>
-            </div>
-
-            <a class="button" href="/dashboard/{athlete_id}/pretty">Main Dashboard</a>
-            <a class="button" href="/dashboard/{athlete_id}">JSON View</a>
-        </body>
-    </html>
-    """
-
-@app.get("/dashboard/{athlete_id}/pretty", response_class=HTMLResponse)
-def pretty_dashboard(athlete_id: str):
-    access_token = refresh_access_token_if_needed(athlete_id)
-    if not access_token:
-        return HTMLResponse("<h1>No athlete token found.</h1>", status_code=404)
+        return JSONResponse({"error": "No athlete token found."}, status_code=404)
 
     athlete = get_logged_in_athlete(access_token)
     activities = get_all_activities(access_token)
     official_stats = get_athlete_stats(access_token, int(athlete_id))
     stats = compute_dashboard_stats(activities, official_stats)
+
     current_year = datetime.now(timezone.utc).year
 
     daily_miles = compute_daily_miles_this_year(activities)
     weekly_miles = compute_weekly_miles_this_year(activities)
     monthly_miles = compute_monthly_miles_this_year(activities)
 
-    daily_heatmap_html = build_daily_heatmap_html(daily_miles, current_year)
-    weekly_heatmap_html = build_weekly_heatmap_html(weekly_miles, current_year)
-    monthly_heatmap_html = build_monthly_heatmap_html(monthly_miles, current_year)
+    daily_heatmap = build_daily_heatmap_data(daily_miles, current_year)
+    weekly_heatmap = build_weekly_heatmap_data(weekly_miles, current_year)
+    monthly_heatmap = build_monthly_heatmap_data(monthly_miles, current_year)
 
-    last_run_html = "<p>No runs found.</p>"
-    if stats["last_run"]:
-        last_run_html = f"""
-        <p><strong>{stats['last_run']['name']}</strong></p>
-        <p>{stats['last_run']['distance_miles']} miles</p>
-        <p>{stats['last_run']['moving_time']}</p>
-        <p>Pace: {stats['last_run']['pace'] or 'N/A'}</p>
-        """
-
-    longest_run_html = "<p>No runs found.</p>"
-    if stats["longest_run"]:
-        longest_run_html = f"""
-        <p><strong>{stats['longest_run']['name']}</strong></p>
-        <p>{stats['longest_run']['distance_miles']} miles</p>
-        <p>{stats['longest_run']['moving_time']}</p>
-        <p>Pace: {stats['longest_run']['pace'] or 'N/A'}</p>
-        """
-
-    return f"""
-    <html>
-        <head>
-            <title>Strava Dashboard</title>
-            <style>
-                body {{
-                    font-family: Arial, sans-serif;
-                    background: #f7f7f7;
-                    max-width: 1100px;
-                    margin: 30px auto;
-                    padding: 20px;
-                }}
-                .grid {{
-                    display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-                    gap: 16px;
-                }}
-                .card {{
-                    background: white;
-                    border-radius: 14px;
-                    padding: 18px;
-                    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-                }}
-                h1, h2 {{
-                    margin-bottom: 8px;
-                }}
-                .muted {{
-                    color: #666;
-                }}
-                .tab-bar {{
-                    display: flex;
-                    gap: 10px;
-                    margin: 20px 0;
-                    flex-wrap: wrap;
-                }}
-                
-                .tab-button {{
-                    border: none;
-                    background: #e9e9e9;
-                    padding: 10px 16px;
-                    border-radius: 10px;
-                    font-weight: bold;
-                    cursor: pointer;
-                }}
-                
-                .tab-button.active {{
-                    background: #fc4c02;
-                    color: white;
-                }}
-                
-                .tab-section {{
-                    display: none;
-                    margin-top: 20px;
-                }}
-                
-                .tab-section.active {{
-                    display: block;
-                }}
-                
-                .heatmap {{
-                    display: grid;
-                    grid-template-columns: repeat(31, 18px);
-                    gap: 6px;
-                    justify-content: start;
-                    margin-top: 10px;
-                }}
-                
-                .day-box {{
-                    width: 18px;
-                    height: 18px;
-                    border-radius: 4px;
-                    background: #ebedf0;
-                }}
-                
-                .level-0 {{ background: #ebedf0; }}
-                .level-1 {{ background: #c6e48b; }}
-                .level-2 {{ background: #7bc96f; }}
-                .level-3 {{ background: #239a3b; }}
-                .level-4 {{ background: #196127; }}
-                
-                .legend {{
-                    margin-top: 20px;
-                    display: flex;
-                    gap: 12px;
-                    align-items: center;
-                    flex-wrap: wrap;
-                }}
-                
-                .legend-item {{
-                    display: flex;
-                    align-items: center;
-                    gap: 6px;
-                    font-size: 14px;
-                }}
-                
-                .legend-box {{
-                    width: 16px;
-                    height: 16px;
-                    border-radius: 4px;
-                }}
-                .heatmap-sub-bar {{
-                    display: flex;
-                    gap: 10px;
-                    margin: 16px 0 20px 0;
-                    flex-wrap: wrap;
-                }}
-                
-                .heatmap-tab-button {{
-                    border: none;
-                    background: #e9e9e9;
-                    padding: 8px 14px;
-                    border-radius: 10px;
-                    font-weight: bold;
-                    cursor: pointer;
-                }}
-                
-                .heatmap-tab-button.active {{
-                    background: #fc4c02;
-                    color: white;
-                }}
-                
-                .heatmap-tab-section {{
-                    display: none;
-                }}
-                
-                .heatmap-tab-section.active {{
-                    display: block;
-                }}
-                
-                .weekly-heatmap {{
-                    display: grid;
-                    grid-template-columns: repeat(9, 28px);
-                    gap: 8px;
-                    justify-content: start;
-                    margin-top: 10px;
-                }}
-                
-                .monthly-heatmap {{
-                    display: grid;
-                    grid-template-columns: repeat(4, 70px);
-                    gap: 10px;
-                    justify-content: start;
-                    margin-top: 10px;
-                }}
-                
-                .week-box, .month-box {{
-                    height: 28px;
-                    border-radius: 6px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    font-size: 12px;
-                    color: #222;
-                    font-weight: bold;
-                }}
-                
-                .month-box {{
-                    height: 50px;
-                }}
-            </style>
-        </head>
-            <script>
-                function showTab(tabId, buttonElement) {{
-                    const sections = document.querySelectorAll('.tab-section');
-                    const buttons = document.querySelectorAll('.tab-button');
-            
-                    sections.forEach(section => section.classList.remove('active'));
-                    buttons.forEach(button => button.classList.remove('active'));
-            
-                    document.getElementById(tabId).classList.add('active');
-                    buttonElement.classList.add('active');
-                }}
-                function showHeatmapTab(tabId, buttonElement) {{
-                    const sections = document.querySelectorAll('.heatmap-tab-section');
-                    const buttons = document.querySelectorAll('.heatmap-tab-button');
-            
-                    sections.forEach(section => section.classList.remove('active'));
-                    buttons.forEach(button => button.classList.remove('active'));
-            
-                    document.getElementById(tabId).classList.add('active');
-                    buttonElement.classList.add('active');
-                }}
-            </script>
-        <body>
-            <h1>{athlete.get('firstname', '')} {athlete.get('lastname', '')}'s Strava Dashboard</h1>
-            <p class="muted">{athlete.get('city', '')}, {athlete.get('state', '')}, {athlete.get('country', '')}</p>
-            
-            <div class="tab-bar">
-                <button class="tab-button active" onclick="showTab('alltime', this)">All Time</button>
-                <button class="tab-button" onclick="showTab('year', this)">This Year</button>
-                <button class="tab-button" onclick="showTab('heatmap', this)">Heatmap</button>
-            </div>
-            
-            <div id="alltime" class="tab-section active">
-                <div class="grid">
-                    <div class="card">
-                        <h2>Total Runs</h2>
-                        <p>{stats['total_runs']}</p>
-                    </div>
-                    <div class="card">
-                        <h2>Total Miles</h2>
-                        <p>{stats['total_miles']}</p>
-                    </div>
-                    <div class="card">
-                        <h2>Average Pace</h2>
-                        <p>{stats['average_pace'] or 'N/A'}</p>
-                    </div>
-                    <div class="card">
-                        <h2>Current Streak</h2>
-                        <p>{stats['current_streak_days']} days</p>
-                    </div>
-                    <div class="card">
-                        <h2>Last Run</h2>
-                        {last_run_html}
-                    </div>
-                    <div class="card">
-                        <h2>Longest Run</h2>
-                        {longest_run_html}
-                    </div>
-                </div>
-            </div>
-            
-            <div id="year" class="tab-section">
-                <div class="grid">
-                    <div class="card">
-                        <h2>Miles This Year</h2>
-                        <p>{stats['ytd_miles']}</p>
-                    </div>
-                    <div class="card">
-                        <h2>Runs This Year</h2>
-                        <p>{official_stats.get('ytd_run_totals', {}).get('count', 0)}</p>
-                    </div>
-                    <div class="card">
-                        <h2>Elevation This Year</h2>
-                        <p>{official_stats.get('ytd_run_totals', {}).get('elevation_gain', 0)} m</p>
-                    </div>
-                    <div class="card">
-                        <h2>Current Streak</h2>
-                        <p>{stats['current_streak_days']} days</p>
-                    </div>
-                </div>
-            </div>
-            
-            <div id="heatmap" class="tab-section">
-                <div class="card">
-                    <h2>{current_year} Run Heatmaps</h2>
-                    <p class="muted">Switch between daily, weekly, and monthly mileage views.</p>
-            
-                    <div class="heatmap-sub-bar">
-                        <button class="heatmap-tab-button active" onclick="showHeatmapTab('daily-heatmap', this)">Daily</button>
-                        <button class="heatmap-tab-button" onclick="showHeatmapTab('weekly-heatmap', this)">Weekly</button>
-                        <button class="heatmap-tab-button" onclick="showHeatmapTab('monthly-heatmap', this)">Monthly</button>
-                    </div>
-            
-                    <div id="daily-heatmap" class="heatmap-tab-section active">
-                        <p class="muted">Each square shows miles run on a single day.</p>
-                        <div class="heatmap">
-                            {daily_heatmap_html}
-                        </div>
-                    </div>
-            
-                    <div id="weekly-heatmap" class="heatmap-tab-section">
-                        <p class="muted">Each square shows total miles run in a week.</p>
-                        <div class="weekly-heatmap">
-                            {weekly_heatmap_html}
-                        </div>
-                    </div>
-            
-                    <div id="monthly-heatmap" class="heatmap-tab-section">
-                        <p class="muted">Each square shows total miles run in a month.</p>
-                        <div class="monthly-heatmap">
-                            {monthly_heatmap_html}
-                        </div>
-                    </div>
-            
-                    <div class="legend">
-                        <div class="legend-item"><div class="legend-box level-0"></div>0 miles</div>
-                        <div class="legend-item"><div class="legend-box level-1"></div>&lt;2 miles</div>
-                        <div class="legend-item"><div class="legend-box level-2"></div>2-4 miles</div>
-                        <div class="legend-item"><div class="legend-box level-3"></div>4-6 miles</div>
-                        <div class="legend-item"><div class="legend-box level-4"></div>&gt;6 miles</div>
-                    </div>
-                </div>
-            </div>
-            
-            <p style="margin-top: 24px;">
-                JSON view: <a href="/dashboard/{athlete_id}">/dashboard/{athlete_id}</a>
-            </p>
-        </body>
-    </html>
-    """
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {
+            "request": request,
+            "athlete_id": athlete_id,
+            "athlete": athlete,
+            "stats": stats,
+            "official_stats": official_stats,
+            "current_year": current_year,
+            "daily_heatmap": daily_heatmap,
+            "weekly_heatmap": weekly_heatmap,
+            "monthly_heatmap": monthly_heatmap,
+        },
+    )

@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ athlete.firstname }} {{ athlete.lastname }} - Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script defer src="/static/app.js"></script>
+</head>
+<body>
+    <div class="page-shell">
+        <header class="topbar">
+            <div class="brand">Personal Strava Premium</div>
+            <nav class="topnav">
+                <button class="nav-pill active" data-tab-target="alltime">Dashboard</button>
+                <button class="nav-pill" data-tab-target="year">This Year</button>
+                <button class="nav-pill" data-tab-target="heatmap">Heatmap</button>
+            </nav>
+        </header>
+
+        <section class="page-header">
+            <div>
+                <h1>{{ athlete.firstname }} {{ athlete.lastname }}</h1>
+                <p class="muted">
+                    {{ athlete.city or "" }}{% if athlete.city and athlete.state %}, {% endif %}{{ athlete.state or "" }}{% if athlete.country %}, {{ athlete.country }}{% endif %}
+                </p>
+            </div>
+            <div class="page-actions">
+                <a class="button ghost" href="/dashboard/{{ athlete_id }}">JSON View</a>
+            </div>
+        </section>
+
+        <main class="dashboard-layout">
+            <section class="main-column">
+                <div id="alltime" class="tab-section active">
+                    <div class="stats-grid">
+                        <div class="card stat-card">
+                            <span class="label">Total Runs</span>
+                            <h2>{{ stats.total_runs }}</h2>
+                        </div>
+
+                        <div class="card stat-card">
+                            <span class="label">Total Miles</span>
+                            <h2>{{ stats.total_miles }}</h2>
+                        </div>
+
+                        <div class="card stat-card">
+                            <span class="label">Average Pace</span>
+                            <h2>{{ stats.average_pace or "N/A" }}</h2>
+                        </div>
+
+                        <div class="card detail-card">
+                            <span class="label">Last Run</span>
+                            {% if stats.last_run %}
+                                <h3>{{ stats.last_run.name }}</h3>
+                                <p>{{ stats.last_run.distance_miles }} miles</p>
+                                <p>{{ stats.last_run.moving_time }}</p>
+                                <p>Pace: {{ stats.last_run.pace or "N/A" }}</p>
+                            {% else %}
+                                <p>No runs found.</p>
+                            {% endif %}
+                        </div>
+
+                        <div class="card detail-card">
+                            <span class="label">Longest Run</span>
+                            {% if stats.longest_run %}
+                                <h3>{{ stats.longest_run.name }}</h3>
+                                <p>{{ stats.longest_run.distance_miles }} miles</p>
+                                <p>{{ stats.longest_run.moving_time }}</p>
+                                <p>Pace: {{ stats.longest_run.pace or "N/A" }}</p>
+                            {% else %}
+                                <p>No runs found.</p>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+
+                <div id="year" class="tab-section">
+                    <div class="stats-grid">
+                        <div class="card stat-card">
+                            <span class="label">Miles This Year</span>
+                            <h2>{{ stats.ytd_miles }}</h2>
+                        </div>
+
+                        <div class="card stat-card">
+                            <span class="label">Runs This Year</span>
+                            <h2>{{ official_stats.ytd_run_totals.count }}</h2>
+                        </div>
+
+                        <div class="card stat-card">
+                            <span class="label">Elevation This Year</span>
+                            <h2>{{ official_stats.ytd_run_totals.elevation_gain }} m</h2>
+                        </div>
+
+                    </div>
+                </div>
+
+                <div id="heatmap" class="tab-section">
+                    <div class="card">
+                        <div class="section-header">
+                            <div>
+                                <h2>{{ current_year }} Run Heatmaps</h2>
+                                <p class="muted">Switch between daily, weekly, and monthly mileage views.</p>
+                            </div>
+                        </div>
+
+                        <div class="subtab-bar">
+                            <button class="subtab-pill active" data-subtab-target="daily-heatmap">Daily</button>
+                            <button class="subtab-pill" data-subtab-target="weekly-heatmap">Weekly</button>
+                            <button class="subtab-pill" data-subtab-target="monthly-heatmap">Monthly</button>
+                        </div>
+
+                        <div id="daily-heatmap" class="subtab-section active">
+                            <p class="muted">Each square shows miles run on a single day.</p>
+                            <div class="heatmap-grid daily-grid">
+                                {% for item in daily_heatmap %}
+                                    <div
+                                        class="heat-box {{ item.level }}"
+                                        title="{{ item.label }}: {{ item.miles }} miles">
+                                    </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+
+                        <div id="weekly-heatmap" class="subtab-section">
+                            <p class="muted">Each square shows total miles run in a week.</p>
+                            <div class="heatmap-grid weekly-grid">
+                                {% for item in weekly_heatmap %}
+                                    <div
+                                        class="heat-box heat-box-large {{ item.level }}"
+                                        title="{{ item.label }}: {{ item.miles }} miles">
+                                        {{ loop.index }}
+                                    </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+
+                        <div id="monthly-heatmap" class="subtab-section">
+                            <p class="muted">Each square shows total miles run in a month.</p>
+                            <div class="heatmap-grid monthly-grid">
+                                {% for item in monthly_heatmap %}
+                                    <div
+                                        class="heat-box heat-box-month {{ item.level }}"
+                                        title="{{ item.label }}: {{ item.miles }} miles">
+                                        {{ item.short_label }}
+                                    </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+
+                        <div class="legend">
+                            <div class="legend-item"><span class="legend-box level-0"></span>0 miles</div>
+                            <div class="legend-item"><span class="legend-box level-1"></span>&lt;3 miles</div>
+                            <div class="legend-item"><span class="legend-box level-2"></span>3-6 miles</div>
+                            <div class="legend-item"><span class="legend-box level-3"></span>6-9 miles</div>
+                            <div class="legend-item"><span class="legend-box level-4"></span>&gt;9 miles</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <aside class="sidebar">
+                <div class="card sidebar-card accent-card">
+                    <span class="label">Current Streak</span>
+                    <div class="big-number">{{ stats.current_streak_days }}</div>
+                    <p>days running</p>
+                </div>
+
+                <div class="card sidebar-card">
+                    <span class="label">This Year</span>
+                    <div class="sidebar-metric">
+                        <span>Miles</span>
+                        <strong>{{ stats.ytd_miles }}</strong>
+                    </div>
+                    <div class="sidebar-metric">
+                        <span>Runs</span>
+                        <strong>{{ official_stats.ytd_run_totals.count }}</strong>
+                    </div>
+                    <div class="sidebar-metric">
+                        <span>Elevation</span>
+                        <strong>{{ official_stats.ytd_run_totals.elevation_gain }} m</strong>
+                    </div>
+                </div>
+
+                <div class="card sidebar-card">
+                    <span class="label">All Time</span>
+                    <div class="sidebar-metric">
+                        <span>Total Runs</span>
+                        <strong>{{ stats.total_runs }}</strong>
+                    </div>
+                    <div class="sidebar-metric">
+                        <span>Total Miles</span>
+                        <strong>{{ stats.total_miles }}</strong>
+                    </div>
+                    <div class="sidebar-metric">
+                        <span>Average Pace</span>
+                        <strong>{{ stats.average_pace or "N/A" }}</strong>
+                    </div>
+                </div>
+            </aside>
+        </main>
+    </div>
+</body>
+</html>
