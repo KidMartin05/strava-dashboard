@@ -518,38 +518,6 @@ def heatmap_dashboard(athlete_id: str):
     </html>
     """
 
-# DEBUG DEBUG DEBUG DEBUG DEBUG
-@app.get("/dashboard/{athlete_id}/debug-runs")
-def debug_runs(athlete_id: str):
-    access_token = refresh_access_token_if_needed(athlete_id)
-    if not access_token:
-        return JSONResponse({"error": "No athlete token found."}, status_code=404)
-
-    activities = get_all_activities(access_token)
-
-    current_year = datetime.now(timezone.utc).year
-    rows = []
-
-    for activity in activities:
-        start_date_local = activity.get("start_date_local")
-        if not start_date_local:
-            continue
-
-        dt = parse_strava_datetime(start_date_local)
-        if dt.year != current_year:
-            continue
-
-        rows.append({
-            "name": activity.get("name"),
-            "sport_type": activity.get("sport_type"),
-            "type": activity.get("type"),
-            "start_date": activity.get("start_date"),
-            "start_date_local": activity.get("start_date_local"),
-            "distance_miles": round(meters_to_miles(activity.get("distance", 0)), 2),
-        })
-
-    return rows
-
 @app.get("/dashboard/{athlete_id}/pretty", response_class=HTMLResponse)
 def pretty_dashboard(athlete_id: str):
     access_token = refresh_access_token_if_needed(athlete_id)
@@ -560,6 +528,35 @@ def pretty_dashboard(athlete_id: str):
     activities = get_all_activities(access_token)
     official_stats = get_athlete_stats(access_token, int(athlete_id))
     stats = compute_dashboard_stats(activities, official_stats)
+    daily_miles = compute_daily_miles_this_year(activities)
+
+    current_year = datetime.now(timezone.utc).year
+    start_of_year = datetime(current_year, 1, 1).date()
+    end_of_year = datetime(current_year, 12, 31).date()
+
+    heatmap_boxes_html = ""
+    current_day = start_of_year
+
+    while current_day <= end_of_year:
+        day_str = current_day.isoformat()
+        miles = daily_miles.get(day_str, 0)
+
+        if miles == 0:
+            level = "level-0"
+        elif miles < 2:
+            level = "level-1"
+        elif miles < 4:
+            level = "level-2"
+        elif miles < 6:
+            level = "level-3"
+        else:
+            level = "level-4"
+
+        heatmap_boxes_html += f'''
+        <div class="day-box {level}" title="{day_str}: {miles:.2f} miles"></div>
+        '''
+
+        current_day += timedelta(days=1)
 
     last_run_html = "<p>No runs found.</p>"
     if stats["last_run"]:
@@ -608,47 +605,170 @@ def pretty_dashboard(athlete_id: str):
                 .muted {{
                     color: #666;
                 }}
+                .tab-bar {{
+                    display: flex;
+                    gap: 10px;
+                    margin: 20px 0;
+                    flex-wrap: wrap;
+                }}
+                
+                .tab-button {{
+                    border: none;
+                    background: #e9e9e9;
+                    padding: 10px 16px;
+                    border-radius: 10px;
+                    font-weight: bold;
+                    cursor: pointer;
+                }}
+                
+                .tab-button.active {{
+                    background: #fc4c02;
+                    color: white;
+                }}
+                
+                .tab-section {{
+                    display: none;
+                    margin-top: 20px;
+                }}
+                
+                .tab-section.active {{
+                    display: block;
+                }}
+                
+                .heatmap {{
+                    display: grid;
+                    grid-template-columns: repeat(31, 18px);
+                    gap: 6px;
+                    justify-content: start;
+                    margin-top: 10px;
+                }}
+                
+                .day-box {{
+                    width: 18px;
+                    height: 18px;
+                    border-radius: 4px;
+                    background: #ebedf0;
+                }}
+                
+                .level-0 {{ background: #ebedf0; }}
+                .level-1 {{ background: #c6e48b; }}
+                .level-2 {{ background: #7bc96f; }}
+                .level-3 {{ background: #239a3b; }}
+                .level-4 {{ background: #196127; }}
+                
+                .legend {{
+                    margin-top: 20px;
+                    display: flex;
+                    gap: 12px;
+                    align-items: center;
+                    flex-wrap: wrap;
+                }}
+                
+                .legend-item {{
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    font-size: 14px;
+                }}
+                
+                .legend-box {{
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 4px;
+                }}
             </style>
         </head>
+            <script>
+                function showTab(tabId, buttonElement) {{
+                    const sections = document.querySelectorAll('.tab-section');
+                    const buttons = document.querySelectorAll('.tab-button');
+            
+                    sections.forEach(section => section.classList.remove('active'));
+                    buttons.forEach(button => button.classList.remove('active'));
+            
+                    document.getElementById(tabId).classList.add('active');
+                    buttonElement.classList.add('active');
+                }}
+            </script>
         <body>
             <h1>{athlete.get('firstname', '')} {athlete.get('lastname', '')}'s Strava Dashboard</h1>
             <p class="muted">{athlete.get('city', '')}, {athlete.get('state', '')}, {athlete.get('country', '')}</p>
-
-            <div class="grid">
-                <div class="card">
-                    <h2>Total Runs</h2>
-                    <p>{stats['total_runs']}</p>
-                </div>
-                <div class="card">
-                    <h2>Total Miles</h2>
-                    <p>{stats['total_miles']}</p>
-                </div>
-                <div class="card">
-                    <h2>Miles This Year</h2>
-                    <p>{stats['ytd_miles']}</p>
-                </div>
-                <div class="card">
-                    <h2>Average Pace</h2>
-                    <p>{stats['average_pace'] or 'N/A'}</p>
-                </div>
-                <div class="card">
-                    <h2>Current Streak</h2>
-                    <p>{stats['current_streak_days']} days</p>
-                </div>
-                <div class="card">
-                    <h2>Last Run</h2>
-                    {last_run_html}
-                </div>
-                <div class="card">
-                    <h2>Longest Run</h2>
-                    {longest_run_html}
+            
+            <div class="tab-bar">
+                <button class="tab-button active" onclick="showTab('alltime', this)">All Time</button>
+                <button class="tab-button" onclick="showTab('year', this)">This Year</button>
+                <button class="tab-button" onclick="showTab('heatmap', this)">Heatmap</button>
+            </div>
+            
+            <div id="alltime" class="tab-section active">
+                <div class="grid">
+                    <div class="card">
+                        <h2>Total Runs</h2>
+                        <p>{stats['total_runs']}</p>
+                    </div>
+                    <div class="card">
+                        <h2>Total Miles</h2>
+                        <p>{stats['total_miles']}</p>
+                    </div>
+                    <div class="card">
+                        <h2>Average Pace</h2>
+                        <p>{stats['average_pace'] or 'N/A'}</p>
+                    </div>
+                    <div class="card">
+                        <h2>Current Streak</h2>
+                        <p>{stats['current_streak_days']} days</p>
+                    </div>
+                    <div class="card">
+                        <h2>Last Run</h2>
+                        {last_run_html}
+                    </div>
+                    <div class="card">
+                        <h2>Longest Run</h2>
+                        {longest_run_html}
+                    </div>
                 </div>
             </div>
             
-            <p style="margin-top: 24px;">
-                <a href="/dashboard/{athlete_id}/heatmap">Run Heatmap</a>
-            </p>
-
+            <div id="year" class="tab-section">
+                <div class="grid">
+                    <div class="card">
+                        <h2>Miles This Year</h2>
+                        <p>{stats['ytd_miles']}</p>
+                    </div>
+                    <div class="card">
+                        <h2>Runs This Year</h2>
+                        <p>{official_stats.get('ytd_run_totals', {}).get('count', 0)}</p>
+                    </div>
+                    <div class="card">
+                        <h2>Elevation This Year</h2>
+                        <p>{official_stats.get('ytd_run_totals', {}).get('elevation_gain', 0)} m</p>
+                    </div>
+                    <div class="card">
+                        <h2>Current Streak</h2>
+                        <p>{stats['current_streak_days']} days</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="heatmap" class="tab-section">
+                <div class="card">
+                    <h2>{current_year} Run Heatmap</h2>
+                    <p class="muted">Each square shows how much you ran on that day.</p>
+            
+                    <div class="heatmap">
+                        {heatmap_boxes_html}
+                    </div>
+            
+                    <div class="legend">
+                        <div class="legend-item"><div class="legend-box level-0"></div>0 miles</div>
+                        <div class="legend-item"><div class="legend-box level-1"></div>&lt;2 miles</div>
+                        <div class="legend-item"><div class="legend-box level-2"></div>2-4 miles</div>
+                        <div class="legend-item"><div class="legend-box level-3"></div>4-6 miles</div>
+                        <div class="legend-item"><div class="legend-box level-4"></div>&gt;6 miles</div>
+                    </div>
+                </div>
+            </div>
+            
             <p style="margin-top: 24px;">
                 JSON view: <a href="/dashboard/{athlete_id}">/dashboard/{athlete_id}</a>
             </p>
