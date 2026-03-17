@@ -212,7 +212,6 @@ def is_run_activity(activity):
     run_types = {"Run", "TrailRun", "VirtualRun"}
     return sport_type in run_types or activity_type in run_types
 
-
 def compute_daily_miles_this_year(activities):
     current_year = datetime.now(timezone.utc).year
     daily_totals = defaultdict(float)
@@ -234,6 +233,115 @@ def compute_daily_miles_this_year(activities):
 
     return dict(sorted(daily_totals.items()))
 
+def compute_weekly_miles_this_year(activities):
+    current_year = datetime.now(timezone.utc).year
+    weekly_totals = defaultdict(float)
+
+    for activity in activities:
+        if not is_run_activity(activity):
+            continue
+
+        start_date_local = activity.get("start_date_local")
+        if not start_date_local:
+            continue
+
+        dt = parse_strava_datetime(start_date_local)
+        if dt.year != current_year:
+            continue
+
+        year, week_num, _ = dt.isocalendar()
+        week_key = f"{year}-W{week_num:02d}"
+        weekly_totals[week_key] += meters_to_miles(activity.get("distance", 0))
+
+    return dict(sorted(weekly_totals.items()))
+
+def compute_monthly_miles_this_year(activities):
+    current_year = datetime.now(timezone.utc).year
+    monthly_totals = defaultdict(float)
+
+    for activity in activities:
+        if not is_run_activity(activity):
+            continue
+
+        start_date_local = activity.get("start_date_local")
+        if not start_date_local:
+            continue
+
+        dt = parse_strava_datetime(start_date_local)
+        if dt.year != current_year:
+            continue
+
+        month_key = f"{dt.year}-{dt.month:02d}"
+        monthly_totals[month_key] += meters_to_miles(activity.get("distance", 0))
+
+    return dict(sorted(monthly_totals.items()))
+
+def get_heat_level(miles):
+    if miles == 0:
+        return "level-0"
+    elif miles < 2:
+        return "level-1"
+    elif miles < 4:
+        return "level-2"
+    elif miles < 6:
+        return "level-3"
+    return "level-4"
+
+def build_daily_heatmap_html(daily_miles, year):
+    start_of_year = datetime(year, 1, 1).date()
+    end_of_year = datetime(year, 12, 31).date()
+
+    html = ""
+    current_day = start_of_year
+
+    while current_day <= end_of_year:
+        day_str = current_day.isoformat()
+        miles = daily_miles.get(day_str, 0)
+        level = get_heat_level(miles)
+
+        html += f'''
+        <div class="day-box {level}" title="{day_str}: {miles:.2f} miles"></div>
+        '''
+
+        current_day += timedelta(days=1)
+
+    return html
+
+def build_weekly_heatmap_html(weekly_miles, year):
+    html = ""
+
+    for week_num in range(1, 54):
+        week_key = f"{year}-W{week_num:02d}"
+        miles = weekly_miles.get(week_key, 0)
+        level = get_heat_level(miles)
+
+        html += f'''
+        <div class="week-box {level}" title="Week {week_num}: {miles:.2f} miles"></div>
+        '''
+
+    return html
+
+def build_monthly_heatmap_html(monthly_miles, year):
+    html = ""
+
+    month_names = [
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"
+    ]
+
+    for month_num in range(1, 13):
+        month_key = f"{year}-{month_num:02d}"
+        miles = monthly_miles.get(month_key, 0)
+        level = get_heat_level(miles)
+        month_name = month_names[month_num - 1]
+
+        html += f'''
+        <div class="month-box {level}" title="{month_name}: {miles:.2f} miles">
+            <span>{month_name[:3]}</span>
+        </div>
+        '''
+
+    return html
 
 def summarize_run(activity):
     if not activity:
@@ -528,35 +636,15 @@ def pretty_dashboard(athlete_id: str):
     activities = get_all_activities(access_token)
     official_stats = get_athlete_stats(access_token, int(athlete_id))
     stats = compute_dashboard_stats(activities, official_stats)
-    daily_miles = compute_daily_miles_this_year(activities)
-
     current_year = datetime.now(timezone.utc).year
-    start_of_year = datetime(current_year, 1, 1).date()
-    end_of_year = datetime(current_year, 12, 31).date()
 
-    heatmap_boxes_html = ""
-    current_day = start_of_year
+    daily_miles = compute_daily_miles_this_year(activities)
+    weekly_miles = compute_weekly_miles_this_year(activities)
+    monthly_miles = compute_monthly_miles_this_year(activities)
 
-    while current_day <= end_of_year:
-        day_str = current_day.isoformat()
-        miles = daily_miles.get(day_str, 0)
-
-        if miles == 0:
-            level = "level-0"
-        elif miles < 2:
-            level = "level-1"
-        elif miles < 4:
-            level = "level-2"
-        elif miles < 6:
-            level = "level-3"
-        else:
-            level = "level-4"
-
-        heatmap_boxes_html += f'''
-        <div class="day-box {level}" title="{day_str}: {miles:.2f} miles"></div>
-        '''
-
-        current_day += timedelta(days=1)
+    daily_heatmap_html = build_daily_heatmap_html(daily_miles, current_year)
+    weekly_heatmap_html = build_weekly_heatmap_html(weekly_miles, current_year)
+    monthly_heatmap_html = build_monthly_heatmap_html(monthly_miles, current_year)
 
     last_run_html = "<p>No runs found.</p>"
     if stats["last_run"]:
@@ -676,12 +764,81 @@ def pretty_dashboard(athlete_id: str):
                     height: 16px;
                     border-radius: 4px;
                 }}
+                .heatmap-sub-bar {{
+                    display: flex;
+                    gap: 10px;
+                    margin: 16px 0 20px 0;
+                    flex-wrap: wrap;
+                }}
+                
+                .heatmap-tab-button {{
+                    border: none;
+                    background: #e9e9e9;
+                    padding: 8px 14px;
+                    border-radius: 10px;
+                    font-weight: bold;
+                    cursor: pointer;
+                }}
+                
+                .heatmap-tab-button.active {{
+                    background: #fc4c02;
+                    color: white;
+                }}
+                
+                .heatmap-tab-section {{
+                    display: none;
+                }}
+                
+                .heatmap-tab-section.active {{
+                    display: block;
+                }}
+                
+                .weekly-heatmap {{
+                    display: grid;
+                    grid-template-columns: repeat(9, 28px);
+                    gap: 8px;
+                    justify-content: start;
+                    margin-top: 10px;
+                }}
+                
+                .monthly-heatmap {{
+                    display: grid;
+                    grid-template-columns: repeat(4, 70px);
+                    gap: 10px;
+                    justify-content: start;
+                    margin-top: 10px;
+                }}
+                
+                .week-box, .month-box {{
+                    height: 28px;
+                    border-radius: 6px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 12px;
+                    color: #222;
+                    font-weight: bold;
+                }}
+                
+                .month-box {{
+                    height: 50px;
+                }}
             </style>
         </head>
             <script>
                 function showTab(tabId, buttonElement) {{
                     const sections = document.querySelectorAll('.tab-section');
                     const buttons = document.querySelectorAll('.tab-button');
+            
+                    sections.forEach(section => section.classList.remove('active'));
+                    buttons.forEach(button => button.classList.remove('active'));
+            
+                    document.getElementById(tabId).classList.add('active');
+                    buttonElement.classList.add('active');
+                }}
+                function showHeatmapTab(tabId, buttonElement) {{
+                    const sections = document.querySelectorAll('.heatmap-tab-section');
+                    const buttons = document.querySelectorAll('.heatmap-tab-button');
             
                     sections.forEach(section => section.classList.remove('active'));
                     buttons.forEach(button => button.classList.remove('active'));
@@ -752,11 +909,34 @@ def pretty_dashboard(athlete_id: str):
             
             <div id="heatmap" class="tab-section">
                 <div class="card">
-                    <h2>{current_year} Run Heatmap</h2>
-                    <p class="muted">Each square shows how much you ran on that day.</p>
+                    <h2>{current_year} Run Heatmaps</h2>
+                    <p class="muted">Switch between daily, weekly, and monthly mileage views.</p>
             
-                    <div class="heatmap">
-                        {heatmap_boxes_html}
+                    <div class="heatmap-sub-bar">
+                        <button class="heatmap-tab-button active" onclick="showHeatmapTab('daily-heatmap', this)">Daily</button>
+                        <button class="heatmap-tab-button" onclick="showHeatmapTab('weekly-heatmap', this)">Weekly</button>
+                        <button class="heatmap-tab-button" onclick="showHeatmapTab('monthly-heatmap', this)">Monthly</button>
+                    </div>
+            
+                    <div id="daily-heatmap" class="heatmap-tab-section active">
+                        <p class="muted">Each square shows miles run on a single day.</p>
+                        <div class="heatmap">
+                            {daily_heatmap_html}
+                        </div>
+                    </div>
+            
+                    <div id="weekly-heatmap" class="heatmap-tab-section">
+                        <p class="muted">Each square shows total miles run in a week.</p>
+                        <div class="weekly-heatmap">
+                            {weekly_heatmap_html}
+                        </div>
+                    </div>
+            
+                    <div id="monthly-heatmap" class="heatmap-tab-section">
+                        <p class="muted">Each square shows total miles run in a month.</p>
+                        <div class="monthly-heatmap">
+                            {monthly_heatmap_html}
+                        </div>
                     </div>
             
                     <div class="legend">
