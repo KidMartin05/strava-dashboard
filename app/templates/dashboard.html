@@ -116,7 +116,8 @@
                                 {% for item in daily_heatmap %}
                                     <div
                                         class="heat-box {{ item.level }}"
-                                        title="{{ item.label }}: {{ item.miles }} miles">
+                                        data-tooltip='{{ item|tojson|safe }}'
+                                        aria-label="{{ item.label }}: {{ item.miles }} miles across {{ item.run_count }} run{% if item.run_count != 1 %}s{% endif %}">
                                     </div>
                                 {% endfor %}
                             </div>
@@ -128,7 +129,8 @@
                                 {% for item in weekly_heatmap %}
                                     <div
                                         class="heat-box heat-box-large {{ item.level }}"
-                                        title="{{ item.label }}: {{ item.miles }} miles">
+                                        data-tooltip='{{ item|tojson|safe }}'
+                                        aria-label="{{ item.label }}: {{ item.miles }} miles across {{ item.run_count }} run{% if item.run_count != 1 %}s{% endif %}">
                                         {{ loop.index }}
                                     </div>
                                 {% endfor %}
@@ -141,7 +143,8 @@
                                 {% for item in monthly_heatmap %}
                                     <div
                                         class="heat-box heat-box-month {{ item.level }}"
-                                        title="{{ item.label }}: {{ item.miles }} miles">
+                                        data-tooltip='{{ item|tojson|safe }}'
+                                        aria-label="{{ item.label }}: {{ item.miles }} miles across {{ item.run_count }} run{% if item.run_count != 1 %}s{% endif %}">
                                         {{ item.short_label }}
                                     </div>
                                 {% endfor %}
@@ -200,5 +203,7 @@
             </aside>
         </main>
     </div>
+
+    <div id="heatmap-tooltip" class="heatmap-tooltip" hidden></div>
 </body>
 </html>

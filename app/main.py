@@ -78,6 +78,21 @@ def format_duration(total_seconds: int) -> str:
     return f"{seconds}s"
 
 
+def pace_from_distance_and_time(distance_miles: float, moving_time_seconds: int):
+    if not distance_miles or distance_miles <= 0 or not moving_time_seconds or moving_time_seconds <= 0:
+        return None
+
+    seconds_per_mile = moving_time_seconds / distance_miles
+    minutes = int(seconds_per_mile // 60)
+    seconds = int(round(seconds_per_mile % 60))
+
+    if seconds == 60:
+        minutes += 1
+        seconds = 0
+
+    return f"{minutes}:{seconds:02d}"
+
+
 def auth_headers(access_token: str):
     return {"Authorization": f"Bearer {access_token}"}
 
@@ -178,6 +193,48 @@ def summarize_run(activity):
         "moving_time": format_duration(activity.get("moving_time", 0)),
         "pace": mps_to_min_per_mile(activity.get("average_speed")),
         "elevation_gain_m": round(activity.get("total_elevation_gain", 0), 1),
+    }
+
+
+def format_display_date(dt_str: str):
+    if not dt_str:
+        return None
+
+    return parse_strava_datetime(dt_str).strftime("%b %d, %Y")
+
+
+def summarize_run_for_tooltip(activity):
+    distance_miles = round(meters_to_miles(activity.get("distance", 0)), 2)
+    return {
+        "name": activity.get("name") or "Run",
+        "date": format_display_date(activity.get("start_date_local")),
+        "distance_miles": distance_miles,
+        "moving_time_seconds": activity.get("moving_time", 0),
+        "moving_time": format_duration(activity.get("moving_time", 0)),
+        "pace": mps_to_min_per_mile(activity.get("average_speed")),
+        "average_heartrate": round(activity.get("average_heartrate", 0)) if activity.get("average_heartrate") else None,
+        "max_heartrate": round(activity.get("max_heartrate", 0)) if activity.get("max_heartrate") else None,
+        "elevation_gain_m": round(activity.get("total_elevation_gain", 0), 1),
+    }
+
+
+def build_aggregate_tooltip_entry(label, runs):
+    total_distance = round(sum(run.get("distance_miles", 0) for run in runs), 2)
+    total_time_seconds = sum(run.get("moving_time_seconds", 0) for run in runs)
+    total_elevation = round(sum(run.get("elevation_gain_m", 0) for run in runs), 1)
+    hr_runs = [run for run in runs if run.get("average_heartrate")]
+    average_heartrate = round(sum(run["average_heartrate"] for run in hr_runs) / len(hr_runs)) if hr_runs else None
+    max_heartrate_values = [run.get("max_heartrate") for run in runs if run.get("max_heartrate")]
+
+    return {
+        "name": label,
+        "date": None,
+        "distance_miles": total_distance,
+        "moving_time": format_duration(total_time_seconds),
+        "pace": pace_from_distance_and_time(total_distance, total_time_seconds),
+        "average_heartrate": average_heartrate,
+        "max_heartrate": max(max_heartrate_values) if max_heartrate_values else None,
+        "elevation_gain_m": total_elevation,
     }
 
 
@@ -287,6 +344,43 @@ def compute_daily_miles_this_year(activities):
     return dict(sorted(daily_totals.items()))
 
 
+def group_runs_this_year(activities):
+    current_year = datetime.now(timezone.utc).year
+    grouped = {
+        "daily": defaultdict(list),
+        "weekly": defaultdict(list),
+        "monthly": defaultdict(list),
+    }
+
+    for activity in activities:
+        if not is_run_activity(activity):
+            continue
+
+        start_date_local = activity.get("start_date_local")
+        if not start_date_local:
+            continue
+
+        dt = parse_strava_datetime(start_date_local)
+        if dt.year != current_year:
+            continue
+
+        run_summary = summarize_run_for_tooltip(activity)
+        day_key = dt.date().isoformat()
+        iso_year, week_num, _ = dt.isocalendar()
+        week_key = f"{iso_year}-W{week_num:02d}"
+        month_key = f"{dt.year}-{dt.month:02d}"
+
+        grouped["daily"][day_key].append(run_summary)
+        grouped["weekly"][week_key].append(run_summary)
+        grouped["monthly"][month_key].append(run_summary)
+
+    for period_runs in grouped.values():
+        for key in period_runs:
+            period_runs[key].sort(key=lambda run: (run["date"] or "", run["name"]))
+
+    return grouped
+
+
 def compute_weekly_miles_this_year(activities):
     current_year = datetime.now(timezone.utc).year
     weekly_totals = defaultdict(float)
@@ -344,7 +438,7 @@ def get_heat_level(miles):
     return "level-4"
 
 
-def build_daily_heatmap_data(daily_miles, year):
+def build_daily_heatmap_data(daily_miles, daily_runs, year):
     items = []
     current_day = datetime(year, 1, 1).date()
     end_of_year = datetime(year, 12, 31).date()
@@ -352,10 +446,14 @@ def build_daily_heatmap_data(daily_miles, year):
     while current_day <= end_of_year:
         day_str = current_day.isoformat()
         miles = round(daily_miles.get(day_str, 0), 2)
+        runs = daily_runs.get(day_str, [])
         items.append(
             {
-                "label": day_str,
+                "label": current_day.strftime("%b %d, %Y"),
+                "date": day_str,
                 "miles": miles,
+                "run_count": len(runs),
+                "runs": runs,
                 "level": get_heat_level(miles),
             }
         )
@@ -364,16 +462,19 @@ def build_daily_heatmap_data(daily_miles, year):
     return items
 
 
-def build_weekly_heatmap_data(weekly_miles, year):
+def build_weekly_heatmap_data(weekly_miles, weekly_runs, year):
     items = []
 
     for week_num in range(1, 54):
         week_key = f"{year}-W{week_num:02d}"
         miles = round(weekly_miles.get(week_key, 0), 2)
+        runs = weekly_runs.get(week_key, [])
         items.append(
             {
                 "label": f"Week {week_num}",
                 "miles": miles,
+                "run_count": len(runs),
+                "runs": [build_aggregate_tooltip_entry(f"Week {week_num} Summary", runs)] if runs else [],
                 "level": get_heat_level(miles),
             }
         )
@@ -381,7 +482,7 @@ def build_weekly_heatmap_data(weekly_miles, year):
     return items
 
 
-def build_monthly_heatmap_data(monthly_miles, year):
+def build_monthly_heatmap_data(monthly_miles, monthly_runs, year):
     items = []
     month_names = [
         "January", "February", "March", "April", "May", "June",
@@ -392,12 +493,15 @@ def build_monthly_heatmap_data(monthly_miles, year):
         month_key = f"{year}-{month_num:02d}"
         miles = round(monthly_miles.get(month_key, 0), 2)
         month_name = month_names[month_num - 1]
+        runs = monthly_runs.get(month_key, [])
 
         items.append(
             {
                 "label": month_name,
                 "short_label": month_name[:3],
                 "miles": miles,
+                "run_count": len(runs),
+                "runs": [build_aggregate_tooltip_entry(f"{month_name} Summary", runs)] if runs else [],
                 "level": get_heat_level(miles),
             }
         )
@@ -510,10 +614,11 @@ def pretty_dashboard(request: Request, athlete_id: str):
     daily_miles = compute_daily_miles_this_year(activities)
     weekly_miles = compute_weekly_miles_this_year(activities)
     monthly_miles = compute_monthly_miles_this_year(activities)
+    grouped_runs = group_runs_this_year(activities)
 
-    daily_heatmap = build_daily_heatmap_data(daily_miles, current_year)
-    weekly_heatmap = build_weekly_heatmap_data(weekly_miles, current_year)
-    monthly_heatmap = build_monthly_heatmap_data(monthly_miles, current_year)
+    daily_heatmap = build_daily_heatmap_data(daily_miles, grouped_runs["daily"], current_year)
+    weekly_heatmap = build_weekly_heatmap_data(weekly_miles, grouped_runs["weekly"], current_year)
+    monthly_heatmap = build_monthly_heatmap_data(monthly_miles, grouped_runs["monthly"], current_year)
 
     return templates.TemplateResponse(
         "dashboard.html",
