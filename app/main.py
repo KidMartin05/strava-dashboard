@@ -51,6 +51,13 @@ def meters_to_miles(meters: float) -> float:
     return meters * 0.000621371
 
 
+def mps_to_mph(speed_mps: float):
+    if not speed_mps or speed_mps <= 0:
+        return None
+
+    return round(speed_mps * 2.23694, 1)
+
+
 def mps_to_min_per_mile(speed_mps: float):
     if not speed_mps or speed_mps <= 0:
         return None
@@ -201,6 +208,65 @@ def format_display_date(dt_str: str):
         return None
 
     return parse_strava_datetime(dt_str).strftime("%b %d, %Y")
+
+
+def format_display_datetime(dt_str: str):
+    if not dt_str:
+        return None
+
+    dt = parse_strava_datetime(dt_str)
+    display_time = dt.strftime("%I:%M %p").lstrip("0")
+    return f"{dt.strftime('%b %d, %Y')} at {display_time}"
+
+
+def format_activity_location(activity):
+    city = activity.get("location_city")
+    state = activity.get("location_state")
+    country = activity.get("location_country")
+    location_parts = [part for part in [city, state, country] if part]
+
+    if location_parts:
+        return ", ".join(location_parts)
+
+    timezone_label = activity.get("timezone")
+    if timezone_label:
+        cleaned_timezone = timezone_label.split(")", 1)[-1].strip() if ")" in timezone_label else timezone_label
+        cleaned_timezone = cleaned_timezone.replace("_", " ").replace("/", " / ")
+        if cleaned_timezone:
+            return cleaned_timezone
+
+    start_latlng = activity.get("start_latlng") or []
+    if len(start_latlng) == 2:
+        latitude, longitude = start_latlng
+        return f"{latitude:.4f}, {longitude:.4f}"
+
+    return None
+
+
+def summarize_activity_card(activity):
+    distance_miles = round(meters_to_miles(activity.get("distance", 0)), 2)
+    average_speed_mph = mps_to_mph(activity.get("average_speed"))
+    is_run = is_run_activity(activity)
+
+    return {
+        "id": activity.get("id"),
+        "name": activity.get("name") or "Untitled Activity",
+        "sport_type": activity.get("sport_type") or activity.get("type") or "Activity",
+        "date": format_display_datetime(activity.get("start_date_local")),
+        "distance_miles": distance_miles,
+        "moving_time": format_duration(activity.get("moving_time", 0)),
+        "elevation_gain_m": round(activity.get("total_elevation_gain", 0), 1),
+        "metric_label": "Pace" if is_run else "Avg Speed",
+        "metric_value": (
+            f"{mps_to_min_per_mile(activity.get('average_speed'))}/mi"
+            if is_run and activity.get("average_speed")
+            else f"{average_speed_mph} mph" if average_speed_mph else "N/A"
+        ),
+        "location": format_activity_location(activity),
+        "kudos_count": activity.get("kudos_count", 0),
+        "trainer": activity.get("trainer", False),
+        "commute": activity.get("commute", False),
+    }
 
 
 def summarize_run_for_tooltip(activity):
@@ -619,6 +685,7 @@ def pretty_dashboard(request: Request, athlete_id: str):
     daily_heatmap = build_daily_heatmap_data(daily_miles, grouped_runs["daily"], current_year)
     weekly_heatmap = build_weekly_heatmap_data(weekly_miles, grouped_runs["weekly"], current_year)
     monthly_heatmap = build_monthly_heatmap_data(monthly_miles, grouped_runs["monthly"], current_year)
+    activity_cards = [summarize_activity_card(activity) for activity in activities]
 
     return templates.TemplateResponse(
         "dashboard.html",
@@ -632,5 +699,6 @@ def pretty_dashboard(request: Request, athlete_id: str):
             "daily_heatmap": daily_heatmap,
             "weekly_heatmap": weekly_heatmap,
             "monthly_heatmap": monthly_heatmap,
+            "activity_cards": activity_cards,
         },
     )

@@ -4,16 +4,45 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{ athlete.firstname }} {{ athlete.lastname }} - Dashboard</title>
-    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="/static/style.css?v=dashboard-activities-3" />
+    <style>
+        .dashboard-page #activities.active .activities-grid {
+            display: grid !important;
+            grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+            gap: 18px !important;
+            align-items: stretch;
+        }
+
+        .dashboard-page #activities.active .activities-grid > .activity-card {
+            width: auto !important;
+            min-width: 0;
+            max-width: none !important;
+        }
+
+        @media (max-width: 1024px) {
+            .dashboard-page #activities.active .activities-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+            }
+        }
+
+        @media (max-width: 640px) {
+            .dashboard-page #activities.active .activities-grid {
+                grid-template-columns: 1fr !important;
+            }
+        }
+    </style>
     <script defer src="/static/app.js"></script>
 </head>
-<body>
+<body class="dashboard-page">
     <div class="page-shell">
         <header class="topbar">
-            <div class="brand">Personal Strava Premium</div>
+            <a class="brand-link" href="/dashboard/{{ athlete_id }}/pretty">
+                <div class="brand">Personal Strava Premium</div>
+            </a>
             <nav class="topnav">
                 <button class="nav-pill active" data-tab-target="alltime">Dashboard</button>
                 <button class="nav-pill" data-tab-target="year">This Year</button>
+                <button class="nav-pill" data-tab-target="activities">Activities</button>
                 <button class="nav-pill" data-tab-target="heatmap">Heatmap</button>
             </nav>
         </header>
@@ -93,6 +122,66 @@
                         </div>
 
                     </div>
+                </div>
+
+                <div id="activities" class="tab-section">
+                    <div class="section-header">
+                        <div>
+                            <h2>All Activities</h2>
+                            <p class="muted">{{ activity_cards|length }} recorded activities.</p>
+                        </div>
+                    </div>
+
+                    <section class="activities-grid">
+                        {% for activity in activity_cards %}
+                            <article class="card activity-card">
+                                <div class="activity-card-header">
+                                    <span class="activity-type-pill">{{ activity.sport_type }}</span>
+                                    <div class="activity-flags">
+                                        {% if activity.trainer %}
+                                            <span class="activity-flag">Trainer</span>
+                                        {% endif %}
+                                        {% if activity.commute %}
+                                            <span class="activity-flag">Commute</span>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <h3>{{ activity.name }}</h3>
+                                <p class="muted activity-date">{{ activity.date }}</p>
+
+                                <div class="activity-metrics">
+                                    <div class="activity-metric">
+                                        <span class="label">Distance</span>
+                                        <strong>{{ activity.distance_miles }} mi</strong>
+                                    </div>
+                                    <div class="activity-metric">
+                                        <span class="label">Moving Time</span>
+                                        <strong>{{ activity.moving_time }}</strong>
+                                    </div>
+                                    <div class="activity-metric">
+                                        <span class="label">{{ activity.metric_label }}</span>
+                                        <strong>{{ activity.metric_value }}</strong>
+                                    </div>
+                                    <div class="activity-metric">
+                                        <span class="label">Elevation</span>
+                                        <strong>{{ activity.elevation_gain_m }} m</strong>
+                                    </div>
+                                </div>
+
+                                <div class="activity-location">
+                                    <span class="label">Location</span>
+                                    <p class="muted">{{ activity.location or "Location unavailable" }}</p>
+                                </div>
+
+                                <div class="activity-card-footer">
+                                    <a class="activity-link" href="https://www.strava.com/activities/{{ activity.id }}" target="_blank" rel="noreferrer">
+                                        {{ activity.kudos_count }} kudos
+                                    </a>
+                                </div>
+                            </article>
+                        {% endfor %}
+                    </section>
                 </div>
 
                 <div id="heatmap" class="tab-section">
