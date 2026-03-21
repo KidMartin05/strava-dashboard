@@ -132,52 +132,89 @@
                         </div>
                     </div>
 
-                    <section class="activities-grid">
+                    <section class="activities-grid" style="display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:18px;">
                         {% for activity in activity_cards %}
                             <article class="card activity-card">
-                                <div class="activity-card-header">
-                                    <span class="activity-type-pill">{{ activity.sport_type }}</span>
-                                    <div class="activity-flags">
+                                <div class="activity-map">
+                                    <div class="activity-map-badges">
+                                        <span class="activity-kudos-pill">{{ activity.kudos_count }} kudos</span>
+                                        <span class="activity-type-pill">{{ activity.sport_type }}</span>
+                                    </div>
+
+                                    {% if activity.map_preview %}
+                                        <svg
+                                            class="activity-map-svg"
+                                            viewBox="0 0 {{ activity.map_preview.width }} {{ activity.map_preview.height }}"
+                                            aria-label="Route preview for {{ activity.name }}">
+                                            <rect
+                                                x="0"
+                                                y="0"
+                                                width="{{ activity.map_preview.width }}"
+                                                height="{{ activity.map_preview.height }}"
+                                                rx="16"
+                                                class="activity-map-bg" />
+                                            <path d="{{ activity.map_preview.path }}" class="activity-map-route-shadow" />
+                                            <path d="{{ activity.map_preview.path }}" class="activity-map-route" />
+                                            <circle
+                                                cx="{{ activity.map_preview.start_x }}"
+                                                cy="{{ activity.map_preview.start_y }}"
+                                                r="4.5"
+                                                class="activity-map-start" />
+                                            <circle
+                                                cx="{{ activity.map_preview.end_x }}"
+                                                cy="{{ activity.map_preview.end_y }}"
+                                                r="5.5"
+                                                class="activity-map-end-ring" />
+                                            <circle
+                                                cx="{{ activity.map_preview.end_x }}"
+                                                cy="{{ activity.map_preview.end_y }}"
+                                                r="2.5"
+                                                class="activity-map-end-dot" />
+                                        </svg>
+                                    {% else %}
+                                        <div class="activity-map-empty">
+                                            <span>Route preview unavailable</span>
+                                        </div>
+                                    {% endif %}
+                                </div>
+
+                                <div class="activity-card-body">
+                                    <h3 class="activity-title">{{ activity.name }}</h3>
+                                    <p class="muted activity-date">{{ activity.date }}</p>
+
+                                    <div class="activity-primary-metrics">
+                                        <div class="activity-metric">
+                                            <span class="label">Distance</span>
+                                            <strong>{{ activity.distance_miles }} mi</strong>
+                                        </div>
+                                        <div class="activity-metric">
+                                            <span class="label">Time</span>
+                                            <strong>{{ activity.moving_time }}</strong>
+                                        </div>
+                                        <div class="activity-metric">
+                                            <span class="label">Elevation</span>
+                                            <strong>{{ activity.elevation_gain_m }} m</strong>
+                                        </div>
+                                    </div>
+
+                                    <div class="activity-chip-row">
+                                        <span class="activity-chip">{{ activity.metric_label }} {{ activity.metric_value }}</span>
+                                        {% if activity.location %}
+                                            <span class="activity-chip activity-chip-muted">{{ activity.location }}</span>
+                                        {% endif %}
                                         {% if activity.trainer %}
-                                            <span class="activity-flag">Trainer</span>
+                                            <span class="activity-chip activity-chip-highlight">Trainer</span>
                                         {% endif %}
                                         {% if activity.commute %}
-                                            <span class="activity-flag">Commute</span>
+                                            <span class="activity-chip activity-chip-highlight">Commute</span>
                                         {% endif %}
                                     </div>
-                                </div>
 
-                                <h3>{{ activity.name }}</h3>
-                                <p class="muted activity-date">{{ activity.date }}</p>
-
-                                <div class="activity-metrics">
-                                    <div class="activity-metric">
-                                        <span class="label">Distance</span>
-                                        <strong>{{ activity.distance_miles }} mi</strong>
+                                    <div class="activity-card-footer">
+                                        <a class="activity-link" href="https://www.strava.com/activities/{{ activity.id }}" target="_blank" rel="noreferrer">
+                                            Open in Strava
+                                        </a>
                                     </div>
-                                    <div class="activity-metric">
-                                        <span class="label">Moving Time</span>
-                                        <strong>{{ activity.moving_time }}</strong>
-                                    </div>
-                                    <div class="activity-metric">
-                                        <span class="label">{{ activity.metric_label }}</span>
-                                        <strong>{{ activity.metric_value }}</strong>
-                                    </div>
-                                    <div class="activity-metric">
-                                        <span class="label">Elevation</span>
-                                        <strong>{{ activity.elevation_gain_m }} m</strong>
-                                    </div>
-                                </div>
-
-                                <div class="activity-location">
-                                    <span class="label">Location</span>
-                                    <p class="muted">{{ activity.location or "Location unavailable" }}</p>
-                                </div>
-
-                                <div class="activity-card-footer">
-                                    <a class="activity-link" href="https://www.strava.com/activities/{{ activity.id }}" target="_blank" rel="noreferrer">
-                                        {{ activity.kudos_count }} kudos
-                                    </a>
                                 </div>
                             </article>
                         {% endfor %}

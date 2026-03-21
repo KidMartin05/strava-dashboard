@@ -36,6 +36,7 @@ else:
 
 ATHLETES = {}
 ACTIVITIES = {}
+ACTIVITY_DETAILS = {}
 
 
 def save_tokens():
@@ -182,6 +183,52 @@ def get_all_activities(access_token: str, per_page: int = 100, max_pages: int = 
     return all_items
 
 
+def get_activity_detail(access_token: str, activity_id: int):
+    cache_key = str(activity_id)
+    if cache_key in ACTIVITY_DETAILS:
+        return ACTIVITY_DETAILS[cache_key]
+
+    response = requests.get(
+        f"{STRAVA_API_BASE}/activities/{activity_id}",
+        headers=auth_headers(access_token),
+        timeout=20,
+    )
+    response.raise_for_status()
+    detail = response.json()
+    ACTIVITY_DETAILS[cache_key] = detail
+    return detail
+
+
+def enrich_activities_with_route_data(access_token: str, activities):
+    enriched_activities = []
+
+    for activity in activities:
+        map_data = activity.get("map") or {}
+        has_route = map_data.get("polyline") or map_data.get("summary_polyline")
+
+        if has_route:
+            enriched_activities.append(activity)
+            continue
+
+        activity_id = activity.get("id")
+        if not activity_id:
+            enriched_activities.append(activity)
+            continue
+
+        try:
+            detail = get_activity_detail(access_token, activity_id)
+            merged_activity = {**activity, **detail}
+            merged_activity["map"] = {
+                **(activity.get("map") or {}),
+                **(detail.get("map") or {}),
+            }
+            enriched_activities.append(merged_activity)
+        except requests.RequestException:
+            enriched_activities.append(activity)
+
+    return enriched_activities
+
+
 def is_run_activity(activity):
     sport_type = activity.get("sport_type")
     activity_type = activity.get("type")
@@ -243,6 +290,120 @@ def format_activity_location(activity):
     return None
 
 
+def decode_polyline(encoded_polyline: str):
+    if not encoded_polyline:
+        return []
+
+    coordinates = []
+    index = 0
+    latitude = 0
+    longitude = 0
+
+    while index < len(encoded_polyline):
+        result = 0
+        shift = 0
+
+        try:
+            while True:
+                byte = ord(encoded_polyline[index]) - 63
+                index += 1
+                result |= (byte & 0x1F) << shift
+                shift += 5
+                if byte < 0x20:
+                    break
+        except IndexError:
+            return []
+
+        latitude_change = ~(result >> 1) if result & 1 else result >> 1
+        latitude += latitude_change
+
+        result = 0
+        shift = 0
+
+        try:
+            while True:
+                byte = ord(encoded_polyline[index]) - 63
+                index += 1
+                result |= (byte & 0x1F) << shift
+                shift += 5
+                if byte < 0x20:
+                    break
+        except IndexError:
+            return []
+
+        longitude_change = ~(result >> 1) if result & 1 else result >> 1
+        longitude += longitude_change
+
+        coordinates.append((latitude / 1e5, longitude / 1e5))
+
+    return coordinates
+
+
+def build_activity_map_preview(activity, width: int = 300, height: int = 150, padding: int = 14):
+    map_data = activity.get("map") or {}
+    encoded_polyline = map_data.get("polyline") or map_data.get("summary_polyline")
+    points = decode_polyline(encoded_polyline)
+
+    if len(points) < 2:
+        start_latlng = activity.get("start_latlng") or []
+        end_latlng = activity.get("end_latlng") or []
+        if len(start_latlng) == 2 and len(end_latlng) == 2:
+            points = [
+                (start_latlng[0], start_latlng[1]),
+                (end_latlng[0], end_latlng[1]),
+            ]
+
+    if len(points) < 2:
+        return None
+
+    if len(points) > 120:
+        step = max(1, len(points) // 120)
+        points = points[::step] + ([points[-1]] if points[-1] != points[::step][-1] else [])
+
+    latitudes = [point[0] for point in points]
+    longitudes = [point[1] for point in points]
+
+    min_lat = min(latitudes)
+    max_lat = max(latitudes)
+    min_lng = min(longitudes)
+    max_lng = max(longitudes)
+
+    lng_range = max(max_lng - min_lng, 1e-9)
+    lat_range = max(max_lat - min_lat, 1e-9)
+
+    inner_width = width - (padding * 2)
+    inner_height = height - (padding * 2)
+    scale = min(inner_width / lng_range, inner_height / lat_range)
+
+    x_offset = (width - (lng_range * scale)) / 2
+    y_offset = (height - (lat_range * scale)) / 2
+
+    projected_points = []
+
+    for latitude, longitude in points:
+        x_position = x_offset + ((longitude - min_lng) * scale)
+        y_position = y_offset + ((max_lat - latitude) * scale)
+        projected_points.append((round(x_position, 2), round(y_position, 2)))
+
+    path_parts = []
+    for index, (x_position, y_position) in enumerate(projected_points):
+        command = "M" if index == 0 else "L"
+        path_parts.append(f"{command} {x_position} {y_position}")
+
+    start_x, start_y = projected_points[0]
+    end_x, end_y = projected_points[-1]
+
+    return {
+        "width": width,
+        "height": height,
+        "path": " ".join(path_parts),
+        "start_x": start_x,
+        "start_y": start_y,
+        "end_x": end_x,
+        "end_y": end_y,
+    }
+
+
 def summarize_activity_card(activity):
     distance_miles = round(meters_to_miles(activity.get("distance", 0)), 2)
     average_speed_mph = mps_to_mph(activity.get("average_speed"))
@@ -266,6 +427,7 @@ def summarize_activity_card(activity):
         "kudos_count": activity.get("kudos_count", 0),
         "trainer": activity.get("trainer", False),
         "commute": activity.get("commute", False),
+        "map_preview": build_activity_map_preview(activity),
     }
 
 
@@ -672,6 +834,7 @@ def pretty_dashboard(request: Request, athlete_id: str):
 
     athlete = get_logged_in_athlete(access_token)
     activities = get_all_activities(access_token)
+    activities = enrich_activities_with_route_data(access_token, activities)
     official_stats = get_athlete_stats(access_token, int(athlete_id))
     stats = compute_dashboard_stats(activities, official_stats)
 
